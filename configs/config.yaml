@@ -1,0 +1,97 @@
+# Current experiment: Sequence length 1280, batch size 8, 2x positive weight, 6 unfrozen layers, 1e-1 weight decay, decoder block 8 layers, dim_feedforward 640, ESMC model
+# Double checking experiment , doubling epochs, reset scheduler at halfway
+
+general_settings:
+  train: false
+  on_hellbender: true
+  save_best_checkpoint: false
+  save_intermediate_checkpoints: false
+  use_checkpoint: true
+  visualize: false
+  test: false
+  checkpoint_path: "/home/dc57y/data/2025-07-02__22-55-02__GPS_6/checkpoints/checkpoint_epoch_44.pth"
+  checkpoints_every: 12
+  use_fix_seed: true
+  fix_seed: 100
+  inference: false
+
+data_type: GPS_6 # ATLAS
+model:
+  cache_dir: "/home/dc57y/data/transformers_cache/"
+  use_compile: false
+  backbone_dropout_rate: 0.3
+  classifier_dropout_rate: 0.5
+  last_state_dropout_rate: 0.0
+  freeze_backbone: true
+  num_unfrozen_layers: 6 #3
+  freeze_embeddings: true
+  hidden_size: 1152 # 2560, 1280, 1152
+  backbone_type: "esmc" # "esmc", "esm2"
+  model_name: "esmc_600m" # "facebook/esm2_t36_3B_UR50D", "facebook/esm2_t33_650M_UR50D", "facebook/esm2_t30_150M_UR50D" 640, "facebook/esm2_t12_35M_UR50D" 480, "esmc_300m", "esmc_600m"
+  structure_aware: false
+  dtype: "bfloat16"
+  decoder_head:
+    num_heads: 8
+    num_layers: 6
+    dim_feedforward: 640
+    dropout: 0.3
+dataset:
+  data_root: "./data"
+  train_path: "gps_6/train.csv"
+  valid_path: "gps_6/validation.csv"
+  test_path: "gps_6/gps_test.csv"
+  inference_path: "gps_6/gps_test_copy.csv"
+#  train_path: "atlas/train.csv"
+#  valid_path: "atlas/validation.csv"
+#  test_path:
+#    - "atlas/cluster_13_14_test.csv"
+#    - "dark_kinase_STE_group_testset.csv"
+  max_sequence_length: 1280 #1024
+  batch_size: 8
+  num_workers: 4
+
+
+optimizer:
+  beta_1: 0.9
+  beta_2: 0.98
+  decay:
+    gamma: 0.2
+    min_lr: 0
+    num_restarts: 1
+    warmup: 512
+  eps: 1e-7
+  grad_clip_norm: 1
+  lr: 5e-5
+  momentum: 0.9
+  name: adam
+  nesterov: true
+  use_8bit_adam: false
+  weight_decay: 1e-1
+  weight_decouple: true
+result_path: ./results/test/
+scheduler:
+  T_0: 48
+  T_max: 48
+  T_mult: 2
+  eta_min: 0
+  eta_min_first: 0.0005
+  eta_min_second: 1.0e-05
+  name: cosine_annealing
+tensorboard_log: true
+tqdm_progress_bar: true
+train_settings:
+  alpha: 0.9
+  max_pos_weight: 2
+  gamma: 1.5
+  grad_accumulation: 4
+  grad_clip_norm: 1
+  label_smoothing: 0.00
+  mixed_precision: bf16
+  num_epochs: 48
+  num_workers: 4
+  shuffle: true
+
+data_root: "./data"
+noise_std: 0.00
+mask_prob: 0.00
+mask_token_id: 32
