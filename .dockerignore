@@ -4,7 +4,5 @@ __pycache__/
 *.DS_Store
 .env
 .git
-model*.pt
-model*.pth
 inputs.jsonl
 preds*.jsonl

@@ -19,14 +19,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY inference.py ./inference.py
 COPY model_state.pth ./model_state.pth
 
-# Optional: warm the ESMC backbone/tokenizer cache at build time
-# (speeds up first inference; requires internet during `docker build`)
-# RUN python - <<'PY'
-# from esm.models.esmc import ESMC
-# ESMC.from_pretrained("esmc_600m")
-# print("ESMC cached")
-# PY
-
 ENV MODEL_PATH=/app/model_state.pth
 
 # Default command
