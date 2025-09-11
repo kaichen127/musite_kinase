@@ -289,99 +289,132 @@ def write_txt_line(fh, sub_id: str, kin_id: str, threshold: float, length: int,
 # 5) CLI
 # ============================================================
 def main():
-    ap = argparse.ArgumentParser(description="Kinase-Substrate inference (FASTA → TXT; 1:1 pairing)")
+    ap = argparse.ArgumentParser(description="Kinase-Substrate inference → TXT (1:1 pairing or single pair)")
+
+    # weights / device / threshold
     ap.add_argument("--weights", default=os.getenv("MODEL_PATH", "model_state.pth"),
                     help="Path to weights (state_dict). Baked-in default: /app/model_state.pth")
-    ap.add_argument("--substrate_fasta", required=True, help="FASTA file of substrate sequences")
-    ap.add_argument("--kinase_fasta", required=True, help="FASTA file of kinase sequences")
-    ap.add_argument("--out_txt", default="preds.txt", help="Output TXT (tab-separated)")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     ap.add_argument("--threshold", type=float, default=0.5)
-    # NEW: batching controls
+    ap.add_argument("--out_txt", default="preds.txt", help="Output TXT (tab-separated)")
+
+    # FASTA mode (1:1 pairing)
+    ap.add_argument("--substrate_fasta", help="FASTA file of substrate sequences")
+    ap.add_argument("--kinase_fasta", help="FASTA file of kinase sequences")
+
+    # Single-pair mode (no FASTA)
+    ap.add_argument("--substrate_seq", help="Single substrate amino-acid sequence (string)")
+    ap.add_argument("--kinase_seq", help="Single kinase amino-acid sequence (string)")
+
+    # Optional batching (FASTA mode only)
     ap.add_argument("--batched", action="store_true",
-                    help="Enable batched inference across multiple 1:1 pairs")
+                    help="Enable batched inference across multiple 1:1 FASTA pairs")
     ap.add_argument("--batch_size", type=int, default=4,
-                    help="Batch size when --batched is set (tune based on RAM/CPU cores)")
+                    help="Batch size when --batched is set (FASTA mode only)")
+
     args = ap.parse_args()
 
-    # Decide device
+    # ----- input-mode validation -----
+    fasta_mode = bool(args.substrate_fasta) or bool(args.kinase_fasta)
+    single_mode = bool(args.substrate_seq) or bool(args.kinase_seq)
+
+    if fasta_mode and single_mode:
+        raise ValueError("Choose exactly one input mode: FASTA (--substrate_fasta + --kinase_fasta) "
+                         "OR single-pair (--substrate_seq + --kinase_seq), not both.")
+    if not fasta_mode and not single_mode:
+        raise ValueError("No inputs provided. Use FASTA mode (--substrate_fasta AND --kinase_fasta) "
+                         "OR single-pair mode (--substrate_seq AND --kinase_seq).")
+
+    if fasta_mode:
+        if not (args.substrate_fasta and args.kinase_fasta):
+            raise ValueError("FASTA mode requires BOTH --substrate_fasta and --kinase_fasta.")
+        if args.batched is False and args.batch_size != 4:
+            # Just a friendly reminder, not an error
+            print("[info] --batch_size is ignored unless --batched is set.")
+    else:
+        # single-pair mode
+        if not (args.substrate_seq and args.kinase_seq):
+            raise ValueError("Single-pair mode requires BOTH --substrate_seq and --kinase_seq.")
+        if args.batched:
+            print("[info] --batched has no effect in single-pair mode (processing one pair).")
+
+    # ----- device -----
     device = "cuda" if (args.device in ["auto", "cuda"] and torch.cuda.is_available()) else "cpu"
 
-    # Build tokenizer + model
+    # ----- model load -----
     tokenizer, model = prepare_model(CONFIG)
-
-    # Load weights (handle {'model_state_dict': ...} checkpoints and DataParallel prefixes)
     sd = torch.load(args.weights, map_location="cpu")
     if isinstance(sd, dict) and "model_state_dict" in sd:
         sd = sd["model_state_dict"]
     if len(sd) and isinstance(next(iter(sd)), str) and next(iter(sd)).startswith("module."):
         sd = {k.replace("module.", "", 1): v for k, v in sd.items()}
     model.load_state_dict(sd, strict=True)
-
-    # Device + dtype
     model.to(device)
     model.to(dtype=(torch.bfloat16 if device == "cuda" else torch.float32))
     model.eval()
 
-    # Read FASTAs (one-to-one pairing)
-    substrates = read_fasta(args.substrate_fasta)  # List[(id, seq)]
-    kinases   = read_fasta(args.kinase_fasta)
-    if not substrates:
-        raise ValueError(f"No substrate sequences found in {args.substrate_fasta}")
-    if not kinases:
-        raise ValueError(f"No kinase sequences found in {args.kinase_fasta}")
-    if len(substrates) != len(kinases):
-        raise ValueError(f"FASTA length mismatch: {len(substrates)} substrates vs {len(kinases)} kinases "
-                         f"(one-to-one pairing requires equal counts)")
-
-    n_pairs = len(substrates)
+    # ----- run + write -----
     with open(args.out_txt, "w", encoding="utf-8") as fh:
         write_txt_header(fh)
 
-        if not args.batched:
-            # Default: unbatched, pair-by-pair using run_one
-            for (sub_id, sub_seq), (kin_id, kin_seq) in zip(substrates, kinases):
-                out = run_one(model, tokenizer, CONFIG, sub_seq, kin_seq, device, args.threshold)
-                write_txt_line(
-                    fh,
-                    sub_id=sub_id,
-                    kin_id=kin_id,
-                    threshold=args.threshold,
-                    length=out["length"],
-                    positives_1based=out["positives_1based"],
-                    binary_mask=out["binary"],
-                )
-        else:
-            # Batched: process in chunks of --batch_size using run_batch
-            B = max(1, int(args.batch_size))
-            for start in range(0, n_pairs, B):
-                chunk_sub = substrates[start:start+B]
-                chunk_kin = kinases[start:start+B]
-                sub_ids   = [sid for sid, _ in chunk_sub]
-                sub_seqs  = [seq for _,  seq in chunk_sub]
-                kin_ids   = [kid for kid, _ in chunk_kin]
-                kin_seqs  = [seq for _,  seq in chunk_kin]
+        if fasta_mode:
+            # FASTA 1:1 pairing
+            substrates = read_fasta(args.substrate_fasta)
+            kinases   = read_fasta(args.kinase_fasta)
+            if not substrates:
+                raise ValueError(f"No substrate sequences found in {args.substrate_fasta}")
+            if not kinases:
+                raise ValueError(f"No kinase sequences found in {args.kinase_fasta}")
+            if len(substrates) != len(kinases):
+                raise ValueError(f"FASTA length mismatch: {len(substrates)} substrates vs {len(kinases)} kinases "
+                                 f"(one-to-one pairing requires equal counts)")
 
-                outs = run_batch(
-                    model, tokenizer, CONFIG,
-                    substrates=sub_seqs, kinases=kin_seqs,
-                    device=device, threshold=args.threshold,
-                    max_length=CONFIG.dataset.max_sequence_length
-                )
-                for (sid, kid), out in zip(zip(sub_ids, kin_ids), outs):
-                    write_txt_line(
-                        fh,
-                        sub_id=sid,
-                        kin_id=kid,
-                        threshold=args.threshold,
-                        length=out["length"],
-                        positives_1based=out["positives_1based"],
-                        binary_mask=out["binary"],
+            n_pairs = len(substrates)
+            if not args.batched:
+                # Unbatched
+                for idx, ((sub_id, sub_seq), (kin_id, kin_seq)) in enumerate(zip(substrates, kinases), start=1):
+                    out = run_one(model, tokenizer, CONFIG, sub_seq, kin_seq, device, args.threshold)
+                    write_txt_line(fh, sub_id=sub_id, kin_id=kin_id, threshold=args.threshold,
+                                   length=out["length"], positives_1based=out["positives_1based"],
+                                   binary_mask=out["binary"])
+                    print(f"[{idx}/{n_pairs}] Processed {sub_id} vs {kin_id}")
+            else:
+                # Batched
+                B = max(1, int(args.batch_size))
+                for start in range(0, n_pairs, B):
+                    chunk_sub = substrates[start:start+B]
+                    chunk_kin = kinases[start:start+B]
+                    sub_ids   = [sid for sid, _ in chunk_sub]
+                    sub_seqs  = [seq for _,  seq in chunk_sub]
+                    kin_ids   = [kid for kid, _ in chunk_kin]
+                    kin_seqs  = [seq for _,  seq in chunk_kin]
+
+                    outs = run_batch(
+                        model, tokenizer, CONFIG,
+                        substrates=sub_seqs, kinases=kin_seqs,
+                        device=device, threshold=args.threshold,
+                        max_length=CONFIG.dataset.max_sequence_length
                     )
+                    for (sid, kid), out, j in zip(zip(sub_ids, kin_ids), outs, range(start+1, start+1+len(outs))):
+                        write_txt_line(fh, sub_id=sid, kin_id=kid, threshold=args.threshold,
+                                       length=out["length"], positives_1based=out["positives_1based"],
+                                       binary_mask=out["binary"])
+                        print(f"[{j}/{n_pairs}] Processed {sid} vs {kid}")
 
-    print(f"Wrote TXT: {args.out_txt} (pairs={n_pairs}) on device={device} "
-          f"{'(batched, B=' + str(args.batch_size) + ')' if args.batched else '(unbatched)'}")
+            print(f"Wrote TXT: {args.out_txt} (pairs={n_pairs}) on device={device} "
+                  f"{'(batched, B=' + str(args.batch_size) + ')' if args.batched else '(unbatched)'}")
 
+        else:
+            # Single-pair mode
+            sub_seq = args.substrate_seq
+            kin_seq = args.kinase_seq
+            out = run_one(model, tokenizer, CONFIG, sub_seq, kin_seq, device, args.threshold)
+            # IDs are not provided → write "N/A"
+            write_txt_line(fh, sub_id="N/A", kin_id="N/A", threshold=args.threshold,
+                           length=out["length"], positives_1based=out["positives_1based"],
+                           binary_mask=out["binary"])
+            print(f"[1/1] Processed single pair (substrate_id=N/A, kinase_id=N/A)")
+            print(f"Wrote TXT: {args.out_txt} (pairs=1) on device={device} (single-pair)")
 
 if __name__ == "__main__":
     main()

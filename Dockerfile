@@ -1,12 +1,9 @@
 FROM python:3.10-slim
 
-# (Optional) set non-root user
-# RUN useradd -ms /bin/bash appuser
-# USER appuser
-
 ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/root/.cache/huggingface
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
