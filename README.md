@@ -10,7 +10,7 @@ This container runs a pretrained kinase–substrate model.
 
 ## Build
 
-docker build -t kinase-model .
+`docker build -t kinase-model .`
 
 ## Command Line Flags
 
@@ -47,17 +47,11 @@ Run with a single substrate and kinase sequence provided via flags:
 
 Linux / Mac: 
 
-docker run --rm -v $PWD:/data kinase-model \
-  --substrate_seq "MDLPVGPGAAGPSNVPAF..." \
-  --kinase_seq "MSDVTIVKEGWVQKRGEYI..." \
-  --out_txt /data/preds.txt
+`docker run --rm -v $PWD:/data kinase-model --substrate_seq "MDLPVGPGAAGPSNVPAF..." --kinase_seq "MSDVTIVKEGWVQKRGEYI..." --out_txt /data/preds.txt`
 
 Windows:
 
-docker run --rm -v "${PWD}:/data" kinase-model `
-  --substrate_seq "MDLPVGPGAAGPSNVPAF..." `
-  --kinase_seq "MSDVTIVKEGWVQKRGEYI..." `
-  --out_txt /data/preds.txt
+`docker run --rm -v "${PWD}:/data" kinase-model --substrate_seq "MDLPVGPGAAGPSNVPAF..." --kinase_seq "MSDVTIVKEGWVQKRGEYI..." --out_txt /data/preds.txt`
 
   
 ### 2. FASTA Input
@@ -65,33 +59,19 @@ Run with substrate and kinase FASTA files (must contain the same number of seque
 
 Linux / Mac: 
 
-docker run --rm -v $PWD:/data kinase-model \
-  --substrate_fasta /data/substrate.fasta \
-  --kinase_fasta /data/kinase.fasta \
-  --out_txt /data/preds.txt
+`docker run --rm -v $PWD:/data kinase-model --substrate_fasta /data/substrate.fasta --kinase_fasta /data/kinase.fasta --out_txt /data/preds.txt`
 
 Windows:
 
-docker run --rm -v "${PWD}:/data" kinase-model `
-  --substrate_fasta /data/substrate.fasta `
-  --kinase_fasta /data/kinase.fasta `
-  --out_txt /data/preds.txt
+`docker run --rm -v "${PWD}:/data" kinase-model --substrate_fasta /data/substrate.fasta --kinase_fasta /data/kinase.fasta --out_txt /data/preds.txt`
 
 ### 3. FASTA Input with Batched Inference
 Enable batching for faster inference (on large files):
 
 Linux / Mac: 
 
-docker run --rm -v $PWD:/data kinase-model \
-  --substrate_fasta /data/substrate.fasta \
-  --kinase_fasta /data/kinase.fasta \
-  --batched --batch_size 4 \
-  --out_txt /data/preds.txt
+`docker run --rm -v $PWD:/data kinase-model --substrate_fasta /data/substrate.fasta --kinase_fasta /data/kinase.fasta --batched --batch_size 4 --out_txt /data/preds.txt` 
 
 Windows:
 
-docker run --rm -v "${PWD}:/data" kinase-model `
-  --substrate_fasta /data/substrate.fasta `
-  --kinase_fasta /data/kinase.fasta `
-  --batched --batch_size 4 `
-  --out_txt /data/preds.txt
+`docker run --rm -v "${PWD}:/data" kinase-model --substrate_fasta /data/substrate.fasta --kinase_fasta /data/kinase.fasta --batched --batch_size 4 --out_txt /data/preds.txt`
