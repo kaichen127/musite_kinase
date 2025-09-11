@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-import os, json, argparse
+import os, argparse
 from types import SimpleNamespace
-from typing import Dict, Any
+from typing import Dict, Any, List, Tuple
 from contextlib import nullcontext
 
 import torch
@@ -19,18 +19,13 @@ CONFIG = SimpleNamespace(
         model_name="esmc_600m",
         hidden_size=1152,
         dtype=torch.bfloat16,
-        # cache_dir="/home/dc57y/data/transformers_cache/",
         structure_aware=False,
-
-        # Freezing & dropouts
         freeze_backbone=True,
         freeze_embeddings=True,
         num_unfrozen_layers=6,
         backbone_dropout_rate=0.3,
         classifier_dropout_rate=0.5,
         last_state_dropout_rate=0.0,
-
-        # Decoder head
         decoder_head=SimpleNamespace(
             num_heads=8,
             num_layers=6,
@@ -87,7 +82,7 @@ class KinaseModel(nn.Module):
                 for i, layer in enumerate(layers):
                     if i >= num_total_layers - num_unfrozen_layers:
                         for p in layer.parameters(): p.requires_grad = True
-                        if hasattr(layer, "attention"):  # ESM2
+                        if hasattr(layer, "attention"):
                             layer.attention.self.dropout = nn.Dropout(backbone_dropout_rate)
                             layer.attention.output.dropout = nn.Dropout(backbone_dropout_rate)
                             layer.intermediate.dropout = nn.Dropout(backbone_dropout_rate)
@@ -105,7 +100,6 @@ class KinaseModel(nn.Module):
 
         self.encoder_to_decoder_dropout = nn.Dropout(esm_to_decoder_dropout_rate)
 
-        # Transformer Decoder Head
         num_heads = configs.model.decoder_head.num_heads
         num_layers = configs.model.decoder_head.num_layers
         dim_feedforward = configs.model.decoder_head.dim_feedforward
@@ -131,9 +125,8 @@ class KinaseModel(nn.Module):
             k_out = self.base_model(sequence_tokens=kinase_input_ids);   k_repr = self.encoder_to_decoder_dropout(k_out.embeddings)
 
         memory_key_padding_mask = (kinase_attention_mask == 0)
-
         dec = self.transformer_decoder(tgt=s_repr, memory=k_repr, memory_key_padding_mask=memory_key_padding_mask)
-        logits = self.classifier(self.dropout(self.norm(dec)))  # [B, Ls, num_labels]
+        logits = self.classifier(self.dropout(self.norm(dec)))
         return logits
 
     def num_parameters(self):
@@ -151,8 +144,33 @@ def prepare_model(configs: SimpleNamespace):
     return tokenizer, model
 
 # ============================================================
-# 2) TOKENIZATION HELPERS
+# 2) FASTA / TOKENIZATION HELPERS
 # ============================================================
+def read_fasta(path: str) -> List[Tuple[str, str]]:
+    """
+    Minimal FASTA reader. Returns list of (id, sequence).
+    Header '>' line is used as id (first token up to whitespace).
+    """
+    entries: List[Tuple[str, str]] = []
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"FASTA not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        cur_id, cur_seq = None, []
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                if cur_id is not None:
+                    entries.append((cur_id, "".join(cur_seq)))
+                cur_id = line[1:].split()[0]
+                cur_seq = []
+            else:
+                cur_seq.append(line)
+        if cur_id is not None:
+            entries.append((cur_id, "".join(cur_seq)))
+    return entries
+
 def tokenize_pair_esm2(tokenizer, substrate_seq: str, kinase_seq: str, device: str, max_length: int = None):
     kwargs = dict(return_tensors="pt", padding=True, truncation=True)
     if max_length is not None:
@@ -184,84 +202,186 @@ def run_one(model: nn.Module, tokenizer, cfg: SimpleNamespace, substrate: str, k
         )
 
     amp_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device == "cuda" else nullcontext()
-
     with torch.no_grad():
         with amp_ctx:
-            logits = model(s_ids, s_mask, k_ids, k_mask)               # [1, Ls, 1]
-        probs = torch.sigmoid(logits.float()).squeeze(-1).squeeze(0)    # [Ls], fp32 for postproc
+            logits = model(s_ids, s_mask, k_ids, k_mask) 
+        probs = torch.sigmoid(logits.float()).squeeze(-1).squeeze(0)  
 
     bin_list = ["1" if p >= threshold else "0" for p in probs.tolist()]
     binary_str = "".join(bin_list)
-
-    # 1-based positive indices
     pos_idx = (probs >= threshold).nonzero(as_tuple=False).squeeze(-1)
     pos_idx_1based = (pos_idx + 1).tolist()
 
     return {
-        "substrate": substrate,
-        "kinase": kinase,
         "binary": binary_str,
-        "probs": [float(p) for p in probs.detach().cpu()],
-        "one_indexed_positives": pos_idx_1based,
-        "threshold": threshold,
+        "positives_1based": pos_idx_1based,
+        "length": len(binary_str),
     }
 
+def run_batch(model: nn.Module, tokenizer, cfg: SimpleNamespace,
+              substrates: list[str], kinases: list[str],
+              device: str, threshold: float,
+              max_length: int | None = None) -> list[Dict[str, Any]]:
+    """
+    Batched inference across multiple 1:1 substrate–kinase pairs.
+    Returns a list of dicts in the same order as inputs.
+    """
+    assert len(substrates) == len(kinases), "run_batch: length mismatch"
+
+    if cfg.model.backbone_type.upper() == "ESMC":
+        s_ids_list = [torch.tensor([tokenizer.encode(s)]) for s in substrates]
+        k_ids_list = [torch.tensor([tokenizer.encode(k)]) for k in kinases]
+        s_ids = torch.nn.utils.rnn.pad_sequence([x.squeeze(0) for x in s_ids_list],
+                                                batch_first=True, padding_value=0)
+        k_ids = torch.nn.utils.rnn.pad_sequence([x.squeeze(0) for x in k_ids_list],
+                                                batch_first=True, padding_value=0)
+        s_mask = (s_ids != 0).to(dtype=torch.int64)
+        k_mask = (k_ids != 0).to(dtype=torch.int64)
+    else:
+        tk_kwargs = dict(return_tensors="pt", padding=True, truncation=True)
+        if max_length is not None:
+            tk_kwargs["max_length"] = max_length
+        s_tok = tokenizer(substrates, **tk_kwargs)
+        k_tok = tokenizer(kinases, **tk_kwargs)
+        s_ids, s_mask = s_tok["input_ids"], s_tok["attention_mask"]
+        k_ids, k_mask = k_tok["input_ids"], k_tok["attention_mask"]
+
+    s_ids, s_mask = s_ids.to(device), s_mask.to(device)
+    k_ids, k_mask = k_ids.to(device), k_mask.to(device)
+
+    results: list[Dict[str, Any]] = []
+    with torch.no_grad():
+        logits = model(s_ids, s_mask, k_ids, k_mask) 
+        probs  = torch.sigmoid(logits.float()).squeeze(-1) 
+
+    for p in probs:  # p: [Ls]
+        bin_list = ["1" if float(x) >= threshold else "0" for x in p.tolist()]
+        binary   = "".join(bin_list)
+        pos_idx  = (p >= threshold).nonzero(as_tuple=False).squeeze(-1)
+        results.append({
+            "binary": binary,
+            "positives_1based": (pos_idx + 1).tolist(),
+            "length": len(binary),
+        })
+    return results
+
 # ============================================================
-# 4) CLI
+# 4) TXT writer
+# ============================================================
+def write_txt_header(fh):
+    fh.write("\t".join([
+        "substrate_id",
+        "kinase_id",
+        "threshold",
+        "length",
+        "positives_1based_csv",
+        "binary_mask"
+    ]) + "\n")
+
+def write_txt_line(fh, sub_id: str, kin_id: str, threshold: float, length: int,
+                   positives_1based: List[int], binary_mask: str):
+    pos_csv = ",".join(str(x) for x in positives_1based)
+    fh.write("\t".join([
+        sub_id, kin_id, f"{threshold:.3f}", str(length), pos_csv, binary_mask
+    ]) + "\n")
+
+# ============================================================
+# 5) CLI
 # ============================================================
 def main():
-    ap = argparse.ArgumentParser(description="Kinase-Substrate inference (config-free CLI)")
-    ap.add_argument("--weights", default=os.getenv("MODEL_PATH", "model_state.pth"))
-    ap.add_argument("--substrate", help="Substrate sequence (single inference)")
-    ap.add_argument("--kinase", help="Kinase sequence (single inference)")
-    ap.add_argument("--in_jsonl", help="Batch JSONL: lines with {\"substrate\":..., \"kinase\":...}")
-    ap.add_argument("--out", default="preds.jsonl", help="Output JSONL path")
+    ap = argparse.ArgumentParser(description="Kinase-Substrate inference (FASTA → TXT; 1:1 pairing)")
+    ap.add_argument("--weights", default=os.getenv("MODEL_PATH", "model_state.pth"),
+                    help="Path to weights (state_dict). Baked-in default: /app/model_state.pth")
+    ap.add_argument("--substrate_fasta", required=True, help="FASTA file of substrate sequences")
+    ap.add_argument("--kinase_fasta", required=True, help="FASTA file of kinase sequences")
+    ap.add_argument("--out_txt", default="preds.txt", help="Output TXT (tab-separated)")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     ap.add_argument("--threshold", type=float, default=0.5)
+    # NEW: batching controls
+    ap.add_argument("--batched", action="store_true",
+                    help="Enable batched inference across multiple 1:1 pairs")
+    ap.add_argument("--batch_size", type=int, default=4,
+                    help="Batch size when --batched is set (tune based on RAM/CPU cores)")
     args = ap.parse_args()
 
+    # Decide device
     device = "cuda" if (args.device in ["auto", "cuda"] and torch.cuda.is_available()) else "cpu"
 
+    # Build tokenizer + model
     tokenizer, model = prepare_model(CONFIG)
 
-    # Load weights (state_dict)
+    # Load weights (handle {'model_state_dict': ...} checkpoints and DataParallel prefixes)
     sd = torch.load(args.weights, map_location="cpu")
+    if isinstance(sd, dict) and "model_state_dict" in sd:
+        sd = sd["model_state_dict"]
     if len(sd) and isinstance(next(iter(sd)), str) and next(iter(sd)).startswith("module."):
         sd = {k.replace("module.", "", 1): v for k, v in sd.items()}
     model.load_state_dict(sd, strict=True)
 
-    # Device + dtype policy
+    # Device + dtype
     model.to(device)
-    if device == "cuda":
-        model.to(dtype=torch.bfloat16)     # bf16 on GPU
-    else:
-        model.to(dtype=torch.float32)      # fp32 on CPU
-
+    model.to(dtype=(torch.bfloat16 if device == "cuda" else torch.float32))
     model.eval()
 
-    # Single vs batch
-    results = []
-    if args.in_jsonl:
-        with open(args.in_jsonl, "r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                item = json.loads(line)
-                sub = item["substrate"]
-                kin = item["kinase"]
-                out = run_one(model, tokenizer, CONFIG, sub, kin, device, args.threshold)
-                results.append(out)
-    else:
-        assert args.substrate and args.kinase, "Provide --substrate and --kinase or --in_jsonl"
-        out = run_one(model, tokenizer, CONFIG, args.substrate, args.kinase, device, args.threshold)
-        results.append(out)
+    # Read FASTAs (one-to-one pairing)
+    substrates = read_fasta(args.substrate_fasta)  # List[(id, seq)]
+    kinases   = read_fasta(args.kinase_fasta)
+    if not substrates:
+        raise ValueError(f"No substrate sequences found in {args.substrate_fasta}")
+    if not kinases:
+        raise ValueError(f"No kinase sequences found in {args.kinase_fasta}")
+    if len(substrates) != len(kinases):
+        raise ValueError(f"FASTA length mismatch: {len(substrates)} substrates vs {len(kinases)} kinases "
+                         f"(one-to-one pairing requires equal counts)")
 
-    # Write JSONL
-    with open(args.out, "w", encoding="utf-8") as f:
-        for r in results:
-            f.write(json.dumps(r) + "\n")
+    n_pairs = len(substrates)
+    with open(args.out_txt, "w", encoding="utf-8") as fh:
+        write_txt_header(fh)
 
-    print(f"wrote {args.out} ({len(results)} samples) on device={device}")
+        if not args.batched:
+            # Default: unbatched, pair-by-pair using run_one
+            for (sub_id, sub_seq), (kin_id, kin_seq) in zip(substrates, kinases):
+                out = run_one(model, tokenizer, CONFIG, sub_seq, kin_seq, device, args.threshold)
+                write_txt_line(
+                    fh,
+                    sub_id=sub_id,
+                    kin_id=kin_id,
+                    threshold=args.threshold,
+                    length=out["length"],
+                    positives_1based=out["positives_1based"],
+                    binary_mask=out["binary"],
+                )
+        else:
+            # Batched: process in chunks of --batch_size using run_batch
+            B = max(1, int(args.batch_size))
+            for start in range(0, n_pairs, B):
+                chunk_sub = substrates[start:start+B]
+                chunk_kin = kinases[start:start+B]
+                sub_ids   = [sid for sid, _ in chunk_sub]
+                sub_seqs  = [seq for _,  seq in chunk_sub]
+                kin_ids   = [kid for kid, _ in chunk_kin]
+                kin_seqs  = [seq for _,  seq in chunk_kin]
+
+                outs = run_batch(
+                    model, tokenizer, CONFIG,
+                    substrates=sub_seqs, kinases=kin_seqs,
+                    device=device, threshold=args.threshold,
+                    max_length=CONFIG.dataset.max_sequence_length
+                )
+                for (sid, kid), out in zip(zip(sub_ids, kin_ids), outs):
+                    write_txt_line(
+                        fh,
+                        sub_id=sid,
+                        kin_id=kid,
+                        threshold=args.threshold,
+                        length=out["length"],
+                        positives_1based=out["positives_1based"],
+                        binary_mask=out["binary"],
+                    )
+
+    print(f"Wrote TXT: {args.out_txt} (pairs={n_pairs}) on device={device} "
+          f"{'(batched, B=' + str(args.batch_size) + ')' if args.batched else '(unbatched)'}")
+
 
 if __name__ == "__main__":
     main()
