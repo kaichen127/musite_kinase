@@ -45,24 +45,14 @@ docker build -t kinase-model .
 ### 1. Single Pair Input
 Run with a single substrate and kinase sequence provided via flags:
 
-docker run --rm kinase-infer \
-  --substrate_seq "MDLPVGPGAAGPSNVPAF..." \
-  --kinase_seq "MSDVTIVKEGWVQKRGEYI..." \
-  --out_txt /app/preds.txt
+docker run --rm kinase-model --substrate_seq "MDLPVGPGAAGPSNVPAF..." --kinase_seq "MSDVTIVKEGWVQKRGEYI..."
 
 ### 2. FASTA Input
 Run with substrate and kinase FASTA files (must contain the same number of sequences):
 
-docker run --rm -v $PWD:/data kinase-infer \
-  --substrate_fasta /data/subs.fasta \
-  --kinase_fasta /data/kins.fasta \
-  --out_txt /data/preds.txt
+docker run --rm -v $PWD:/data kinase-model --substrate_fasta /data/substrate.fasta --kinase_fasta /data/kinase.fasta
 
 ### 3. FASTA Input with Batched Inference
 Enable batching for faster inference (on large files):
 
-docker run --rm -v $PWD:/data kinase-infer \
-  --substrate_fasta /data/subs.fasta \
-  --kinase_fasta /data/kins.fasta \
-  --out_txt /data/preds.txt \
-  --batched --batch_size 4
+docker run --rm -v $PWD:/data kinase-model --substrate_fasta /data/substrate.fasta --kinase_fasta /data/kinase.fasta --batched --batch_size 4
