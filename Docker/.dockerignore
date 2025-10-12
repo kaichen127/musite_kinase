@@ -3,6 +3,6 @@ __pycache__/
 *.pyo
 *.DS_Store
 .env
-model*.pt
-model*.pth
-preds.txt
+.git
+inputs.jsonl
+preds*.jsonl

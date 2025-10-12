@@ -1,8 +1,0 @@
-__pycache__/
-*.pyc
-*.pyo
-*.DS_Store
-.env
-.git
-inputs.jsonl
-preds*.jsonl
