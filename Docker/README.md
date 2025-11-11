@@ -1,4 +1,4 @@
-# Kinase-Substrate Inference
+# Kinase-Substrate Inference (Docker)
 
 This container runs a pretrained kinase–substrate model.  
 **Input**: FASTA files for substrate(s) and kinase(s) OR single substrate-kinase pair passed in through the command line.

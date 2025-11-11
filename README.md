@@ -1,77 +1,31 @@
-# Kinase-Substrate Inference
+# Kinase–Substrate Interaction Models
 
-This container runs a pretrained kinase–substrate model.  
-**Input**: FASTA files for substrate(s) and kinase(s) OR single substrate-kinase pair passed in through the command line.
-**Output**: TXT (tab-separated) with a per-residue binary mask and positive residue indices.
+This repository contains two complementary projects for running **kinase–substrate interaction prediction models**:
 
-## Requirements
-- Download model_state.pth into this directory
-- Docker installed and running
+| Project | Description | Usage |
+|----------|-------------|-------|
+| [Docker](./Docker) | Run the pretrained model entirely inside a Docker container. | Plug-and-play inference without local dependencies. |
+| [Inference](./inference) | Run inference directly via Python (`inference.py`) and a config file. | For developers who want more control or integration. |
 
-## Build
-
-`docker build -t kinase-model .`
-
-## Command Line Flags
-
-### Required (choose one input mode)
-- `--substrate_fasta` : Path to FASTA file of substrate sequences  
-- `--kinase_fasta`    : Path to FASTA file of kinase sequences  
-  *(FASTA mode: one-to-one pairing, both files must have the same number of sequences)*  
-
-**OR**  
-
-- `--substrate_seq`   : Single substrate sequence (string)  
-- `--kinase_seq`      : Single kinase sequence (string)  
-  *(Single-pair mode: both sequences must be provided)*  
+Both methods output **per-residue predictions** (binary binding masks) and **positive residue indices** for each substrate sequence. Probabilities for each predicted residue can be enabled in both methods.
 
 ---
 
-### Optional
-- `--weights`   : Path to model weights (`.pth`).  
-  Default = `/app/model_state.pth` (baked into the Docker image)  
-- `--device`    : Compute device: `auto`, `cpu`, or `cuda`.  
-  Default = `auto` (use GPU if available, otherwise CPU)  
-- `--threshold` : Classification cutoff for positive prediction.  
-  Default = `0.5`  
-- `--out_txt`   : Output TXT file path.  
-  Default = `preds.txt`  
-- `--batched`   : Enable batched inference (only if FASTA input is given).  
-- `--batch_size`: Batch size when `--batched` is enabled.  
-  Default = `4`  
+## Model Overview
+The model is a **transformer-based encoder–decoder** architecture that:
+- Encodes a **substrate protein sequence** and a **kinase protein sequence** using a pretrained **ESMC backbone**.
+- Applies a **Transformer decoder with cross-attention** to predict residue-level interaction sites.
 
-## Example usage
+---
 
-### 1. Single Pair Input
-Run with a single substrate and kinase sequence provided via flags:
+## Pretrained Checkpoint
+Download the pretrained model weights here:  
+➡️ [Download `model_state.pth`](https://mailmissouri-my.sharepoint.com/my?CT=1762894034365&OR=OWA%2DNT%2DMail&CID=ed7bf1d7%2D2196%2D46ef%2D6414%2D603daa7c905a&e=5%3A116f7edc372e494a824884deaa68b405&sharingv2=true&fromShare=true&at=9&id=%2Fpersonal%2Fdc57y%5Fumsystem%5Fedu%2FDocuments%2FKinase%20model%20checkpoint&FolderCTID=0x012000FD8061A658A93B4BB7BAE70D3A6E59D5)
 
-Linux / Mac: 
+After downloading, place it in:
+```bash
+# For Docker:
+./Docker/model_state.pth
 
-`docker run --rm -v $PWD:/data kinase-model --substrate_seq "MDLPVGPGAAGPSNVPAF..." --kinase_seq "MSDVTIVKEGWVQKRGEYI..." --out_txt /data/preds.txt`
-
-Windows:
-
-`docker run --rm -v "${PWD}:/data" kinase-model --substrate_seq "MDLPVGPGAAGPSNVPAF..." --kinase_seq "MSDVTIVKEGWVQKRGEYI..." --out_txt /data/preds.txt`
-
-  
-### 2. FASTA Input
-Run with substrate and kinase FASTA files (must contain the same number of sequences):
-
-Linux / Mac: 
-
-`docker run --rm -v $PWD:/data kinase-model --substrate_fasta /data/substrate.fasta --kinase_fasta /data/kinase.fasta --out_txt /data/preds.txt`
-
-Windows:
-
-`docker run --rm -v "${PWD}:/data" kinase-model --substrate_fasta /data/substrate.fasta --kinase_fasta /data/kinase.fasta --out_txt /data/preds.txt`
-
-### 3. FASTA Input with Batched Inference
-Enable batching for faster inference (on large files):
-
-Linux / Mac: 
-
-`docker run --rm -v $PWD:/data kinase-model --substrate_fasta /data/substrate.fasta --kinase_fasta /data/kinase.fasta --batched --batch_size 4 --out_txt /data/preds.txt` 
-
-Windows:
-
-`docker run --rm -v "${PWD}:/data" kinase-model --substrate_fasta /data/substrate.fasta --kinase_fasta /data/kinase.fasta --batched --batch_size 4 --out_txt /data/preds.txt`
+# For Python inference:
+./inference/model_state.pth
